@@ -1,0 +1,9 @@
+{
+  "name": "cashflow-game",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Денежный поток — веб-адаптация настольной игры",
+  "scripts": {
+    "start": "node serve.js"
+  }
+}

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Денежный поток — веб-версия</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💸</text></svg>">
+<link rel="stylesheet" href="css/styles.css?v=3" />
+</head>
+<body data-theme="classic">
+
+  <!-- ЭКРАН НАСТРОЙКИ -->
+  <div id="setup" class="screen">
+    <div class="setup-card">
+      <h1>💸 Денежный поток</h1>
+      <p class="sub">Веб-адаптация классической игры за одним устройством.<br>
+      Выходите из «крысиных бегов», покупая активы, а затем — свою мечту на скоростной трассе.</p>
+
+      <div class="themes" id="theme-picker">
+        <div class="theme-opt" data-t="classic">
+          <div class="t-ic">🃏</div>
+          <div class="t-name">Классика</div>
+          <div class="t-desc">Тёмно-зелёное сукно и современные панели — привычное оформление</div>
+        </div>
+        <div class="theme-opt" data-t="homm">
+          <div class="t-ic">🏰</div>
+          <div class="t-name">Heroes III</div>
+          <div class="t-desc">Пергамент, золото и дерево: клетки-карты, диалоги-свитки, средневековый шрифт</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <label><b>Режим:</b></label>
+        <button id="mode-local" class="btn small sel-mode">📱 За одним устройством</button>
+        <button id="mode-online" class="btn small">🌐 Онлайн</button>
+      </div>
+
+      <div id="hotseat-form">
+        <div class="row">
+          <label for="pcount"><b>Игроков:</b></label>
+          <select id="pcount"></select>
+        </div>
+
+        <div id="player-rows"></div>
+
+        <div class="row gap">
+          <button id="btn-start" class="btn primary big">▶ Начать игру</button>
+          <button id="btn-rules" class="btn">📖 Правила</button>
+        </div>
+      </div>
+
+      <div id="online-form" class="hidden">
+        <div id="online-entry">
+          <div class="row">
+            <input id="host-name" type="text" maxlength="16" placeholder="Ваше имя">
+            <button id="btn-create-room" class="btn primary">🎲 Создать комнату</button>
+          </div>
+          <div class="row">
+            <input id="join-code" type="text" inputmode="numeric" maxlength="4" placeholder="Номер комнаты" style="width:150px">
+            <input id="join-name" type="text" maxlength="16" placeholder="Ваше имя">
+            <button id="btn-join-room" class="btn">Войти</button>
+          </div>
+          <div id="online-status" class="dim">Создайте комнату и назовите номер друзьям — они войдут с своих телефонов.</div>
+        </div>
+        <div id="online-lobby" class="hidden">
+          <p>Комната: <b id="lobby-code" style="font-size:26px;color:var(--gold)"></b></p>
+          <p class="dim" id="lobby-hint"></p>
+          <ul id="lobby-players" class="lobby-list"></ul>
+          <button id="btn-start-online" class="btn primary big hidden">▶ Начать игру</button>
+        </div>
+        <div class="row">
+          <button id="btn-rules-online" class="btn">📖 Правила</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ИГРОВОЙ ЭКРАН -->
+  <div id="game" class="screen hidden">
+    <header>
+      <span class="logo">💸 Денежный поток</span>
+      <span class="spacer"></span>
+      <button id="btn-rules2" class="btn small">📖 Правила</button>
+      <button id="btn-new" class="btn small">🔄 Новая игра</button>
+    </header>
+
+    <div id="layout">
+      <div id="board-zone">
+        <div id="board">
+          <div id="ring-rat"></div>
+          <div id="ring-ft"></div>
+          <div id="tokens"></div>
+          <div id="center">
+            <div id="center-title">Денежный поток</div>
+            <div id="turn-label">Ход: <b id="cur-name">—</b></div>
+            <div id="dice"></div>
+            <button id="btn-roll" class="btn primary big">Бросить кубик</button>
+            <div id="phase-hint" class="dim"></div>
+            <div id="progress">
+              <div id="progress-text"></div>
+              <div class="pbar"><span class="pfill"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside id="side">
+        <div id="players-strip"></div>
+        <div id="statement"></div>
+        <div id="loanbox"></div>
+        <div id="logwrap">
+          <h4>Журнал</h4>
+          <div id="log"></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="modal-root" class="hidden"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/net.js"></script>
+  <script src="js/data.js?v=3"></script>
+  <script src="js/engine.js?v=3"></script>
+  <script src="js/ui.js?v=3"></script>
+</body>
+</html>
