@@ -1,23 +1,23 @@
-/* Сетевой слой онлайн-режима.
-   Архитектура: хост-игрок авторитетен — у него крутится движок (engine.js),
-   состояние комнаты хранится в Supabase (cf_rooms.state) и рассылается через
-   Realtime. Остальные игроки — клиенты: отправляют действия (бросок, ответы на
-   решения) в cf_actions, хост применяет их движком и публикует новое состояние.
-   Для локальной разработки двух вкладок вместо Supabase используется мок
-   (js/supabase-mock.js) — включается url: 'mock' в js/config.js. */
+/* Сетевой слой онлайн-режима — P2P через PeerJS.
+   Хост-игрок авторитетен: у него крутится движок, он рассылает состояние партии
+   всем подключённым игрокам. Клиенты шлют действия (бросок, ответы на решения).
+   Сигналинг — бесплатный облачный сервер PeerJS, регистрация и ключи не нужны.
+   Номер комнаты — это часть идентификатора хоста в сети PeerJS. */
 window.CF_NET = (function () {
-  let sb = null;
+  const ID_PREFIX = 'homm3-cash-room-';
+  const SDK = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js';
+
   let role = 'none';            // 'none' | 'host' | 'client'
   let code = null;
-  let ver = 0;
-  let channel = null;
+  let peer = null;
+  let hostConn = null;          // у клиента: соединение с хостом
+  const conns = new Map();      // у хоста: key -> соединение
   let onStateCb = null;
   let onActionCb = null;
   const resolvers = {};         // seq -> fn(value) — ожидающие решения хоста
-  let lastActionId = 0;
+  let lobby = [];               // [{name, key}] — гости в лобби (на хосте)
   let pushPending = false;
   let queue = Promise.resolve();
-  let lobby = [];               // [{name, key}] — гости в лобби (на хосте)
 
   function loadScript(src) {
     return new Promise((ok, fail) => {
@@ -29,93 +29,133 @@ window.CF_NET = (function () {
     });
   }
 
-  async function init() {
-    if (sb) return;
-    const c = window.CF_CONFIG || {};
-    if (!c.supabaseUrl || !c.supabaseKey) throw new Error('Заполните js/config.js (URL и anon-ключ Supabase)');
-    if (c.supabaseUrl === 'mock') {
-      await loadScript('js/supabase-mock.js');
-      window.supabase = window.supabaseMock();
-    } else {
-      if (!window.supabase) await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2');
-    }
-    sb = window.supabase.createClient(c.supabaseUrl, c.supabaseKey);
-  }
+  function genCode() { return String(1000 + Math.floor(Math.random() * 9000)); }
+  const peerIdFor = c => ID_PREFIX + c;
 
   // ---------- хост ----------
-  async function createRoom(myCode) {
-    code = myCode;
-    role = 'host';
-    lobby = [];
-    const res = await sb.from('cf_rooms').upsert({ code, state: { lobby: [], started: false }, version: 0 });
-    if (res.error) throw res.error;
-    subscribeHost();
-    return code;
+  async function createRoom() {
+    if (role === 'host') return code;
+    await loadScript(SDK);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const c = genCode();
+      const taken = await new Promise(resolve => {
+        let settled = false;
+        peer = new Peer(peerIdFor(c));
+        peer.on('open', () => { if (!settled) { settled = true; resolve(false); } });
+        peer.on('error', err => {
+          if (!settled) { settled = true; try { peer.destroy(); } catch (e) {} resolve(err.type === 'unavailable-id'); }
+        });
+      });
+      if (!taken) {
+        role = 'host';
+        code = c;
+        lobby = [];
+        wireHost();
+        return c;
+      }
+    }
+    throw new Error('Не удалось занять свободный номер, попробуйте ещё раз');
   }
 
-  function subscribeHost() {
-    channel = sb.channel('cf-' + code + '-host');
-    channel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cf_actions', filter: 'code=eq.' + code },
-      msg => onIncomingAction(msg.new));
-    channel.subscribe(async status => {
-      if (status === 'SUBSCRIBED') {
-        // подтянуть действия, пришедшие до подписки
-        const res = await sb.from('cf_actions').select('*').eq('code', code).order('id');
-        if (res.data) for (const row of res.data) onIncomingAction(row);
-      }
+  function wireHost() {
+    peer.on('connection', conn => {
+      conn.on('data', msg => {
+        queue = queue.then(() => onHostMessage(conn, msg)).catch(e => console.error('Ошибка действия:', e));
+      });
+      conn.on('close', () => onClientLeft(conn));
     });
   }
 
-  function onIncomingAction(row) {
-    if (!row || row.id <= lastActionId) return;
-    lastActionId = row.id;
-    // действия обрабатываются строго по одному, в порядке поступления
-    queue = queue.then(() => onActionCb(row)).catch(e => console.error('Ошибка обработки действия:', e));
+  function onHostMessage(conn, msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'join') {
+      conn._key = msg.key;
+      conn._name = msg.name;
+      conns.set(msg.key, conn);
+      if (!lobby.some(j => j.key === msg.key)) lobby.push({ name: (msg.name || 'Гость').replace(/[<>&"]/g, ''), key: msg.key });
+      if (onActionCb) onActionCb({ action: { type: 'join', name: msg.name, key: msg.key } });
+      pushStateNow();
+      return;
+    }
+    if (msg.seq !== undefined && msg.seq !== null) { resolveAction(msg); return; }
+    if (onActionCb) onActionCb({ action: msg });
   }
 
-  // ---------- клиент ----------
-  async function joinRoom(myCode, name, key) {
-    code = myCode;
-    role = 'client';
-    const check = await sb.from('cf_rooms').select('state').eq('code', code).maybeSingle();
-    if (check.error || !check.data) throw new Error('Комната ' + code + ' не найдена');
-    subscribeClient();
-    await sb.from('cf_actions').insert({ code, player_id: -1, action: { type: 'join', name, key } });
-    if (onStateCb) onStateCb(check.data.state);
+  function onClientLeft(conn) {
+    if (conn._key && conns.get(conn._key) === conn) conns.delete(conn._key);
+    // если у отключившегося игрока было ожидающее решение — отменяем его
+    const st = window.CF_ENGINE.getState();
+    if (st && st.pending) {
+      const key = (st.playerKeys || [])[st.pending.playerId];
+      if (key === conn._key) {
+        const seq = st.pending.seq;
+        st.pending = null;
+        pushStateNow();
+        resolveDirect(seq, { timeout: true });
+      }
+    }
+  }
+  function resolveDirect(seq, value) {
+    const r = resolvers[seq];
+    if (r) { delete resolvers[seq]; r(value); }
   }
 
-  function subscribeClient() {
-    channel = sb.channel('cf-' + code + '-client');
-    channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cf_rooms', filter: 'code=eq.' + code },
-      msg => { if (onStateCb) onStateCb(msg.new.state); });
-    channel.subscribe();
+  function broadcast(clean) {
+    for (const conn of conns.values()) {
+      try { conn.send(clean); } catch (e) { /* соединение могло умереть */ }
+    }
   }
 
-  // ---------- действия и решения ----------
-  async function sendAction(action, playerId) {
-    const res = await sb.from('cf_actions').insert({ code, player_id: playerId ?? -1, action });
-    if (res.error) throw res.error;
+  function pushStateNow() {
+    if (role !== 'host') return;
+    const st = window.CF_ENGINE.getState();
+    if (!st) { broadcast({ lobby, started: false }); return; }
+    const clean = JSON.parse(JSON.stringify({ ...st, busy: false }));
+    broadcast(clean);
   }
 
   function pushStateSoon() {
     if (role !== 'host' || pushPending) return;
     pushPending = true;
-    setTimeout(async () => {
-      pushPending = false;
-      const st = window.CF_ENGINE.getState();
-      if (!st || !code) return;
-      const clean = JSON.parse(JSON.stringify({ ...st, busy: false }));
-      const res = await sb.from('cf_rooms').update({ state: clean, version: ++ver, updated_at: new Date().toISOString() }).eq('code', code);
-      if (res.error) console.error('Ошибка публикации состояния:', res.error);
-    }, 250);
+    setTimeout(() => { pushPending = false; pushStateNow(); }, 250);
   }
 
-  async function pushLobby() {
-    await sb.from('cf_rooms').update({ state: { lobby, started: false } }).eq('code', code);
+  async function pushLobby() { pushStateNow(); }
+
+  // ---------- клиент ----------
+  async function joinRoom(myCode, name, key) {
+    if (role === 'client' && hostConn) return true;
+    await loadScript(SDK);
+    role = 'client';
+    code = myCode;
+    const connected = await new Promise(resolve => {
+      let settled = false;
+      const fail = () => { if (!settled) { settled = true; try { peer && peer.destroy(); } catch (e) {} resolve(false); } };
+      try {
+        peer = new Peer();
+        peer.on('open', () => {
+          const conn = peer.connect(peerIdFor(myCode), { reliable: true });
+          conn.on('open', () => {
+            if (!settled) { settled = true; hostConn = conn; resolve(true); }
+          });
+          conn.on('data', msg => { if (onStateCb) onStateCb(msg); });
+          conn.on('close', () => { if (hostConn === conn) hostConn = null; });
+          setTimeout(fail, 12000);
+        });
+        peer.on('error', () => fail());
+      } catch (e) { fail(); }
+    });
+    if (!connected) throw new Error('Комната ' + myCode + ' не найдена или хост офлайн');
+    hostConn.send({ type: 'join', name, key });
+    return true;
   }
 
-  /* Решение удалённого игрока: публикуем pending в состояние и ждём ответ
-     {seq, value} из cf_actions. */
+  function sendAction(action, playerId) {
+    if (role === 'client' && hostConn) { try { hostConn.send(action); } catch (e) {} }
+    // хост действует напрямую через движок — сетевая отправка не нужна
+  }
+
+  // ---------- решения ----------
   function decide(playerId, kind, payload) {
     return new Promise(resolve => {
       const st = window.CF_ENGINE.getState();
@@ -123,34 +163,36 @@ window.CF_NET = (function () {
       st.pendingSeq = seq;
       st.pending = { playerId, kind, payload, seq };
       resolvers[seq] = resolve;
-      pushStateSoon();
-      // страховка: если игрок ушёл — решение отменяется через 3 минуты
+      pushStateNow();
+      const key = (st.playerKeys || [])[playerId];
+      const conn = key ? conns.get(key) : null;
+      if (conn) { try { conn.send({ seq, kind, payload }); } catch (e) {} }
       setTimeout(() => {
         if (resolvers[seq]) {
           delete resolvers[seq];
-          if (window.CF_ENGINE.getState()) window.CF_ENGINE.getState().pending = null;
-          pushStateSoon();
+          const cur = window.CF_ENGINE.getState();
+          if (cur) cur.pending = null;
+          pushStateNow();
           resolve({ timeout: true });
         }
       }, 180000);
     });
   }
 
-  function resolveAction(act) {
-    if (act.seq && resolvers[act.seq]) {
-      const r = resolvers[act.seq];
-      delete resolvers[act.seq];
+  function resolveAction(msg) {
+    if (msg.seq && resolvers[msg.seq]) {
+      const r = resolvers[msg.seq];
+      delete resolvers[msg.seq];
       const st = window.CF_ENGINE.getState();
       if (st) st.pending = null;
-      pushStateSoon();
-      r(act.value);
+      pushStateNow();
+      r(msg.value);
       return true;
     }
     return false;
   }
 
   return {
-    init,
     createRoom,
     joinRoom,
     sendAction,

@@ -814,9 +814,9 @@
   function hostOnAction(row) {
     const act = row.action;
     if (act.type === 'join') {
-      if (NET.getLobby().some(j => j.key === act.key)) return; // уже в лобби
-      NET.addLobby({ name: (act.name || 'Гость').replace(/[<>&"]/g, ''), key: act.key });
-      NET.pushLobby().then(renderLobby);
+      // net.js уже добавил гостя в лобби и разослал состояние — обновляем список
+      renderLobby();
+      NET.pushLobby();
       return;
     }
     if (act.seq !== undefined && act.seq !== null) { NET.resolveAction(act); return; }
@@ -866,6 +866,7 @@
       `<li class="host">👑 ${hostName} (хост)</li>` +
       NET.getLobby().map(j => `<li>🎮 ${j.name}</li>`).join('');
     $('#lobby-hint').textContent = 'Отправьте номер друзьям — они вводят его и своё имя.';
+    $('#online-status').textContent = 'Комната готова.';
     $('#btn-start-online').classList.remove('hidden');
   }
 
@@ -927,13 +928,11 @@
 
     $('#btn-create-room').onclick = async () => {
       try {
-        onlineStatus('Подключение…');
-        await NET.init();
+        onlineStatus('Подключение к signalling-серверу…');
         hostName = ($('#host-name').value.trim() || 'Хост').replace(/[<>&"]/g, '');
         NETMODE = 'host';
         NET.onAction(hostOnAction);
-        const code = String(1000 + Math.floor(Math.random() * 9000));
-        await NET.createRoom(code);
+        const code = await NET.createRoom();
         $('#online-entry').classList.add('hidden');
         $('#online-lobby').classList.remove('hidden');
         renderLobby();
@@ -949,7 +948,6 @@
         const name = ($('#join-name').value.trim() || 'Гость').replace(/[<>&"]/g, '');
         if (!/^\d{4}$/.test(code)) { onlineStatus('Введите 4-значный номер комнаты'); return; }
         onlineStatus('Подключение…');
-        await NET.init();
         NETMODE = 'client';
         myKey = localStorage.getItem('cf-key-' + code) ||
           (Math.random().toString(36).slice(2) + Date.now().toString(36));
